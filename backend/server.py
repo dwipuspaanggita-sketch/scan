@@ -1459,8 +1459,36 @@ async def get_bruteforce_result(result_id: str):
 
 @api_router.get("/wordlist")
 async def get_default_wordlist():
-    """Get default password wordlist"""
-    return {"passwords": DEFAULT_PASSWORDS, "count": len(DEFAULT_PASSWORDS)}
+    """Get default password wordlist info"""
+    return {
+        "total_count": len(DEFAULT_PASSWORDS),
+        "categories": {
+            "base_common": len(BASE_PASSWORDS),
+            "wordpress_specific": len(WP_SPECIFIC_PASSWORDS),
+            "year_based": len(YEAR_PASSWORDS),
+            "month_based": len(MONTH_PASSWORDS)
+        },
+        "sample_passwords": DEFAULT_PASSWORDS[:50],
+        "features": [
+            "Username-based password generation",
+            "Leetspeak variations",
+            "Year suffixes (2020-2026)",
+            "Month-based passwords",
+            "WordPress specific patterns",
+            "Indonesian common passwords"
+        ]
+    }
+
+
+@api_router.post("/wordlist/generate")
+async def generate_passwords_for_user(username: str):
+    """Generate password variations for a specific username"""
+    passwords = generate_username_based_passwords(username)
+    return {
+        "username": username,
+        "generated_count": len(passwords),
+        "passwords": passwords
+    }
 
 
 # Include the router in the main app
