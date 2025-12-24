@@ -236,11 +236,13 @@ const BruteForce = () => {
   const [usernames, setUsernames] = useState("admin");
   const [customPasswords, setCustomPasswords] = useState("");
   const [useDefaultWordlist, setUseDefaultWordlist] = useState(true);
+  const [generateUsernamePasswords, setGenerateUsernamePasswords] = useState(true);
   const [batchSize, setBatchSize] = useState(100);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
   const [wordlistCount, setWordlistCount] = useState(0);
+  const [wordlistInfo, setWordlistInfo] = useState(null);
 
   useEffect(() => {
     fetchHistory();
@@ -252,7 +254,11 @@ const BruteForce = () => {
   };
 
   const fetchWordlist = async () => {
-    try { const r = await axios.get(`${API}/wordlist`); setWordlistCount(r.data.count); } catch (e) { console.error(e); }
+    try { 
+      const r = await axios.get(`${API}/wordlist`); 
+      setWordlistCount(r.data.total_count); 
+      setWordlistInfo(r.data);
+    } catch (e) { console.error(e); }
   };
 
   const startBruteforce = async () => {
