@@ -447,6 +447,457 @@ async def clear_history():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==========================================
+# WP SECURITY SCANNER
+# ==========================================
+
+class ScanRequest(BaseModel):
+    target_url: str
+    scan_types: List[str] = ["user_enum", "xmlrpc", "security_headers", "wp_version"]
+
+class ScanResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    target_url: str
+    scan_date: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    is_wordpress: bool = False
+    wp_version: Optional[str] = None
+    users_found: List[Dict[str, Any]] = []
+    xmlrpc_status: Dict[str, Any] = {}
+    security_headers: Dict[str, Any] = {}
+    vulnerabilities: List[Dict[str, Any]] = []
+    recommendations: List[str] = []
+
+
+def normalize_url(url: str) -> str:
+    """Normalize and validate URL"""
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+async def check_wordpress(client: httpx.AsyncClient, base_url: str) -> tuple:
+    """Check if site is WordPress and get version"""
+    is_wp = False
+    version = None
+    
+    try:
+        # Check wp-login.php
+        resp = await client.get(f"{base_url}/wp-login.php", follow_redirects=True)
+        if resp.status_code == 200 and 'wordpress' in resp.text.lower():
+            is_wp = True
+        
+        # Check readme.html for version
+        resp = await client.get(f"{base_url}/readme.html")
+        if resp.status_code == 200:
+            match = re.search(r'Version\s*([\d.]+)', resp.text)
+            if match:
+                version = match.group(1)
+                is_wp = True
+        
+        # Check wp-includes
+        resp = await client.get(f"{base_url}/wp-includes/js/jquery/jquery.min.js")
+        if resp.status_code == 200:
+            is_wp = True
+        
+        # Check meta generator
+        resp = await client.get(base_url)
+        if resp.status_code == 200:
+            match = re.search(r'<meta name="generator" content="WordPress\s*([\d.]*)"', resp.text)
+            if match:
+                is_wp = True
+                if match.group(1):
+                    version = match.group(1)
+                    
+    except Exception as e:
+        logging.error(f"Error checking WordPress: {e}")
+    
+    return is_wp, version
+
+
+async def enumerate_users(client: httpx.AsyncClient, base_url: str) -> List[Dict]:
+    """Enumerate WordPress users using multiple methods"""
+    users = []
+    found_ids = set()
+    
+    # Method 1: REST API (wp-json/wp/v2/users)
+    try:
+        resp = await client.get(f"{base_url}/wp-json/wp/v2/users", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            for user in data:
+                if user.get('id') not in found_ids:
+                    users.append({
+                        "id": user.get('id'),
+                        "username": user.get('slug'),
+                        "name": user.get('name'),
+                        "method": "REST API",
+                        "url": user.get('link')
+                    })
+                    found_ids.add(user.get('id'))
+    except Exception as e:
+        logging.debug(f"REST API enum failed: {e}")
+    
+    # Method 2: Author archive enumeration (?author=N)
+    for i in range(1, 11):
+        try:
+            resp = await client.get(f"{base_url}/?author={i}", follow_redirects=True, timeout=5)
+            if resp.status_code == 200:
+                # Check URL for username
+                match = re.search(r'/author/([^/]+)/?', str(resp.url))
+                if match and i not in found_ids:
+                    username = match.group(1)
+                    users.append({
+                        "id": i,
+                        "username": username,
+                        "name": username,
+                        "method": "Author Archive",
+                        "url": str(resp.url)
+                    })
+                    found_ids.add(i)
+        except Exception:
+            continue
+    
+    # Method 3: oEmbed API
+    try:
+        resp = await client.get(f"{base_url}/wp-json/oembed/1.0/embed?url={base_url}", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            author = data.get('author_name')
+            author_url = data.get('author_url')
+            if author and author_url:
+                # Extract user ID from URL if possible
+                match = re.search(r'/author/([^/]+)/?', author_url)
+                if match:
+                    username = match.group(1)
+                    if username not in [u['username'] for u in users]:
+                        users.append({
+                            "id": None,
+                            "username": username,
+                            "name": author,
+                            "method": "oEmbed API",
+                            "url": author_url
+                        })
+    except Exception as e:
+        logging.debug(f"oEmbed enum failed: {e}")
+    
+    # Method 4: RSS Feed
+    try:
+        resp = await client.get(f"{base_url}/feed/", timeout=10)
+        if resp.status_code == 200:
+            # Find dc:creator tags
+            creators = re.findall(r'<dc:creator><!\[CDATA\[([^\]]+)\]\]></dc:creator>', resp.text)
+            for creator in set(creators):
+                if creator not in [u['username'] for u in users] and creator not in [u['name'] for u in users]:
+                    users.append({
+                        "id": None,
+                        "username": creator.lower().replace(' ', ''),
+                        "name": creator,
+                        "method": "RSS Feed",
+                        "url": None
+                    })
+    except Exception as e:
+        logging.debug(f"RSS enum failed: {e}")
+    
+    # Method 5: Login error message enumeration
+    try:
+        # Test with common usernames
+        test_users = ['admin', 'administrator', 'root', 'user', 'test']
+        for test_user in test_users:
+            resp = await client.post(
+                f"{base_url}/wp-login.php",
+                data={"log": test_user, "pwd": "wrongpassword123!@#"},
+                follow_redirects=True,
+                timeout=10
+            )
+            if resp.status_code == 200:
+                # Check if user exists based on error message
+                if 'incorrect' in resp.text.lower() or 'password' in resp.text.lower():
+                    if test_user not in [u['username'] for u in users]:
+                        users.append({
+                            "id": None,
+                            "username": test_user,
+                            "name": test_user,
+                            "method": "Login Error",
+                            "url": None
+                        })
+                # Break if rate limited
+                if 'too many' in resp.text.lower() or 'slow down' in resp.text.lower():
+                    break
+    except Exception as e:
+        logging.debug(f"Login error enum failed: {e}")
+    
+    return users
+
+
+async def check_xmlrpc(client: httpx.AsyncClient, base_url: str) -> Dict:
+    """Check XMLRPC vulnerabilities"""
+    result = {
+        "enabled": False,
+        "url": f"{base_url}/xmlrpc.php",
+        "methods_available": [],
+        "vulnerabilities": [],
+        "pingback_enabled": False,
+        "multicall_enabled": False
+    }
+    
+    try:
+        # Check if xmlrpc.php exists
+        resp = await client.get(f"{base_url}/xmlrpc.php", timeout=10)
+        if resp.status_code == 405 or (resp.status_code == 200 and 'xml-rpc server accepts post requests only' in resp.text.lower()):
+            result["enabled"] = True
+        
+        if not result["enabled"]:
+            resp = await client.post(
+                f"{base_url}/xmlrpc.php",
+                content='<?xml version="1.0"?><methodCall><methodName>system.listMethods</methodName></methodCall>',
+                headers={"Content-Type": "text/xml"},
+                timeout=10
+            )
+            if resp.status_code == 200 and 'methodresponse' in resp.text.lower():
+                result["enabled"] = True
+        
+        if result["enabled"]:
+            # Get available methods
+            resp = await client.post(
+                f"{base_url}/xmlrpc.php",
+                content='<?xml version="1.0"?><methodCall><methodName>system.listMethods</methodName></methodCall>',
+                headers={"Content-Type": "text/xml"},
+                timeout=15
+            )
+            if resp.status_code == 200:
+                methods = re.findall(r'<string>([^<]+)</string>', resp.text)
+                result["methods_available"] = methods[:20]  # Limit to 20
+                
+                # Check for dangerous methods
+                if 'wp.getUsersBlogs' in methods:
+                    result["vulnerabilities"].append({
+                        "name": "User Enumeration via XMLRPC",
+                        "severity": "Medium",
+                        "method": "wp.getUsersBlogs",
+                        "description": "Allows username enumeration through authentication attempts"
+                    })
+                
+                if 'pingback.ping' in methods:
+                    result["pingback_enabled"] = True
+                    result["vulnerabilities"].append({
+                        "name": "Pingback DDoS",
+                        "severity": "Medium", 
+                        "method": "pingback.ping",
+                        "description": "Site can be used as DDoS amplification vector"
+                    })
+                
+                if 'system.multicall' in methods:
+                    result["multicall_enabled"] = True
+                    result["vulnerabilities"].append({
+                        "name": "Multicall Brute Force Amplification",
+                        "severity": "High",
+                        "method": "system.multicall",
+                        "description": "Allows multiple login attempts in single request, bypassing rate limits"
+                    })
+                
+                if 'wp.getUsers' in methods:
+                    result["vulnerabilities"].append({
+                        "name": "User Information Disclosure",
+                        "severity": "Medium",
+                        "method": "wp.getUsers",
+                        "description": "May expose user information with valid credentials"
+                    })
+                    
+    except Exception as e:
+        logging.error(f"XMLRPC check error: {e}")
+        result["error"] = str(e)
+    
+    return result
+
+
+async def check_security_headers(client: httpx.AsyncClient, base_url: str) -> Dict:
+    """Check security headers"""
+    result = {
+        "headers_present": {},
+        "headers_missing": [],
+        "score": 0
+    }
+    
+    important_headers = {
+        "X-Frame-Options": "Prevents clickjacking attacks",
+        "X-Content-Type-Options": "Prevents MIME type sniffing",
+        "X-XSS-Protection": "Enables browser XSS filter",
+        "Strict-Transport-Security": "Enforces HTTPS connections",
+        "Content-Security-Policy": "Prevents XSS and injection attacks",
+        "Referrer-Policy": "Controls referrer information",
+        "Permissions-Policy": "Controls browser features"
+    }
+    
+    try:
+        resp = await client.get(base_url, timeout=10)
+        headers = dict(resp.headers)
+        
+        for header, desc in important_headers.items():
+            header_lower = header.lower()
+            found = False
+            for h in headers:
+                if h.lower() == header_lower:
+                    result["headers_present"][header] = {
+                        "value": headers[h],
+                        "description": desc
+                    }
+                    found = True
+                    break
+            
+            if not found:
+                result["headers_missing"].append({
+                    "header": header,
+                    "description": desc
+                })
+        
+        # Calculate score
+        result["score"] = int((len(result["headers_present"]) / len(important_headers)) * 100)
+        
+    except Exception as e:
+        logging.error(f"Security headers check error: {e}")
+        result["error"] = str(e)
+    
+    return result
+
+
+def generate_recommendations(scan_result: Dict) -> List[str]:
+    """Generate security recommendations based on scan results"""
+    recommendations = []
+    
+    # WordPress version
+    if scan_result.get("wp_version"):
+        recommendations.append(f"⚠️ WordPress version {scan_result['wp_version']} terdeteksi. Pastikan selalu update ke versi terbaru.")
+    
+    # User enumeration
+    if scan_result.get("users_found"):
+        recommendations.append("🔒 User enumeration aktif! Disable REST API user endpoint atau gunakan plugin security.")
+        recommendations.append("💡 Tambahkan kode ini di functions.php: add_filter('rest_endpoints', function($endpoints) { unset($endpoints['/wp/v2/users']); return $endpoints; });")
+    
+    # XMLRPC
+    xmlrpc = scan_result.get("xmlrpc_status", {})
+    if xmlrpc.get("enabled"):
+        recommendations.append("⛔ XMLRPC aktif! Disable jika tidak digunakan untuk meningkatkan keamanan.")
+        recommendations.append("💡 Tambahkan di .htaccess: <Files xmlrpc.php>\\nOrder Deny,Allow\\nDeny from all\\n</Files>")
+        
+        if xmlrpc.get("multicall_enabled"):
+            recommendations.append("🚨 KRITIS: system.multicall aktif - rentan terhadap brute force amplification!")
+        
+        if xmlrpc.get("pingback_enabled"):
+            recommendations.append("⚠️ Pingback aktif - site bisa digunakan untuk DDoS amplification.")
+    
+    # Security headers
+    headers = scan_result.get("security_headers", {})
+    if headers.get("score", 100) < 50:
+        recommendations.append("🛡️ Security headers kurang! Tambahkan headers berikut di .htaccess atau nginx config.")
+        for missing in headers.get("headers_missing", [])[:3]:
+            recommendations.append(f"  - {missing['header']}: {missing['description']}")
+    
+    # General recommendations
+    recommendations.append("✅ Gunakan plugin security seperti Wordfence atau Sucuri")
+    recommendations.append("✅ Aktifkan 2FA untuk semua admin users")
+    recommendations.append("✅ Ubah default login URL (/wp-admin) menggunakan plugin")
+    recommendations.append("✅ Limit login attempts untuk mencegah brute force")
+    
+    return recommendations
+
+
+@api_router.post("/scan", response_model=ScanResult)
+async def scan_wordpress(request: ScanRequest):
+    """Scan WordPress site for security issues"""
+    try:
+        base_url = normalize_url(request.target_url)
+        
+        async with httpx.AsyncClient(
+            timeout=30,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            },
+            verify=False  # Allow self-signed certs
+        ) as client:
+            
+            result = {
+                "id": str(uuid.uuid4()),
+                "target_url": base_url,
+                "scan_date": datetime.now(timezone.utc),
+                "is_wordpress": False,
+                "wp_version": None,
+                "users_found": [],
+                "xmlrpc_status": {},
+                "security_headers": {},
+                "vulnerabilities": [],
+                "recommendations": []
+            }
+            
+            # Check if WordPress
+            is_wp, version = await check_wordpress(client, base_url)
+            result["is_wordpress"] = is_wp
+            result["wp_version"] = version
+            
+            if not is_wp:
+                result["recommendations"] = ["❌ Target bukan WordPress atau tidak dapat diakses"]
+                return ScanResult(**result)
+            
+            # Run scans based on requested types
+            if "user_enum" in request.scan_types:
+                result["users_found"] = await enumerate_users(client, base_url)
+            
+            if "xmlrpc" in request.scan_types:
+                result["xmlrpc_status"] = await check_xmlrpc(client, base_url)
+                # Add XMLRPC vulnerabilities to main list
+                for vuln in result["xmlrpc_status"].get("vulnerabilities", []):
+                    result["vulnerabilities"].append(vuln)
+            
+            if "security_headers" in request.scan_types:
+                result["security_headers"] = await check_security_headers(client, base_url)
+            
+            # Generate recommendations
+            result["recommendations"] = generate_recommendations(result)
+            
+            # Save to database
+            doc = result.copy()
+            doc['scan_date'] = doc['scan_date'].isoformat()
+            await db.scan_results.insert_one(doc)
+            
+            return ScanResult(**result)
+            
+    except Exception as e:
+        logging.error(f"Scan error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/scans", response_model=List[Dict])
+async def get_scan_history():
+    """Get scan history"""
+    try:
+        scans = await db.scan_results.find(
+            {},
+            {"_id": 0, "users_found": 0, "xmlrpc_status": 0, "security_headers": 0}
+        ).sort("scan_date", -1).to_list(50)
+        return scans
+    except Exception as e:
+        logging.error(f"Error fetching scans: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/scans/{scan_id}")
+async def get_scan_by_id(scan_id: str):
+    """Get specific scan result"""
+    try:
+        scan = await db.scan_results.find_one({"id": scan_id}, {"_id": 0})
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        return scan
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error fetching scan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Include the router in the main app
 app.include_router(api_router)
 
