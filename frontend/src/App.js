@@ -272,6 +272,7 @@ const BruteForce = () => {
         usernames: usernameList,
         passwords: passwordList,
         use_default_wordlist: useDefaultWordlist,
+        generate_username_passwords: generateUsernamePasswords,
         batch_size: batchSize
       }, { timeout: 300000 }); // 5 minute timeout
 
@@ -337,7 +338,7 @@ const BruteForce = () => {
               />
             </div>
 
-            <div>
+            <div className="space-y-2">
               <label className="flex items-center gap-3 cursor-pointer group">
                 <input
                   type="checkbox"
@@ -347,7 +348,7 @@ const BruteForce = () => {
                   disabled={running}
                 />
                 <span className="text-gray-300 group-hover:text-white">
-                  Gunakan wordlist default ({wordlistCount} passwords)
+                  Wordlist default ({wordlistCount} passwords)
                 </span>
               </label>
             </div>
