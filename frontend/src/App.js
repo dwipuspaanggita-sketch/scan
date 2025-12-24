@@ -541,6 +541,15 @@ const BruteForce = () => {
                   {result.error}
                 </div>
               )}
+
+              {/* Password Sources */}
+              {result.password_sources?.length > 0 && (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {result.password_sources.map((src, i) => (
+                    <span key={i} className="px-2 py-1 bg-purple-500/20 text-purple-300 rounded text-xs">{src}</span>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Credentials Found */}
@@ -572,6 +581,83 @@ const BruteForce = () => {
                       </div>
                     ))}
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* User Info Disclosure */}
+            {result.user_info_disclosed?.length > 0 && (
+              <div className="bg-blue-500/10 backdrop-blur-sm rounded-xl border border-blue-500/30 overflow-hidden">
+                <div className="p-4 border-b border-blue-500/30">
+                  <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                    <Users className="w-5 h-5 text-blue-400" />
+                    🔓 User Information Disclosure
+                  </h3>
+                </div>
+                <div className="p-4 space-y-4">
+                  {result.user_info_disclosed.map((info, idx) => (
+                    <div key={idx} className="p-4 bg-black/30 rounded-lg border border-blue-500/20">
+                      <h4 className="text-white font-medium mb-3">User: {info.username}</h4>
+                      
+                      {/* User Details */}
+                      {info.user_details && Object.keys(info.user_details).length > 0 && (
+                        <div className="mb-3">
+                          <div className="text-xs text-blue-400 mb-2">Profile Details:</div>
+                          <div className="grid grid-cols-2 gap-2 text-sm">
+                            {Object.entries(info.user_details).map(([key, value]) => (
+                              <div key={key} className="flex gap-2">
+                                <span className="text-gray-500">{key}:</span>
+                                <span className="text-white">{value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Blogs */}
+                      {info.blogs?.length > 0 && (
+                        <div className="mb-3">
+                          <div className="text-xs text-blue-400 mb-2">Blogs Access:</div>
+                          <div className="space-y-1">
+                            {info.blogs.map((blog, i) => (
+                              <div key={i} className="flex items-center gap-2 text-sm">
+                                <span className="text-white">{blog.name}</span>
+                                {blog.is_admin && <span className="px-1 py-0.5 bg-red-500/20 text-red-400 rounded text-xs">ADMIN</span>}
+                                {blog.url && <a href={blog.url} target="_blank" rel="noopener noreferrer" className="text-blue-400 text-xs hover:underline">{blog.url}</a>}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Capabilities */}
+                      {info.capabilities?.length > 0 && (
+                        <div className="mb-3">
+                          <div className="text-xs text-blue-400 mb-2">Capabilities:</div>
+                          <div className="flex flex-wrap gap-1">
+                            {info.capabilities.map((cap, i) => (
+                              <span key={i} className="px-2 py-0.5 bg-purple-500/20 text-purple-300 rounded text-xs">{cap}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Posts */}
+                      {info.posts?.length > 0 && (
+                        <div>
+                          <div className="text-xs text-blue-400 mb-2">Recent Posts:</div>
+                          <div className="space-y-1">
+                            {info.posts.map((post, i) => (
+                              <div key={i} className="flex items-center gap-2 text-sm">
+                                <span className="text-white">{post.title}</span>
+                                <span className="px-1 py-0.5 bg-gray-500/20 text-gray-400 rounded text-xs">{post.status}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
