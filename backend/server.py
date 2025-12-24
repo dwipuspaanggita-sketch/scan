@@ -1182,16 +1182,6 @@ async def start_bruteforce(request: BruteForceRequest):
     try:
         base_url = normalize_url(request.target_url)
         
-        # Prepare password list
-        passwords = []
-        if request.use_default_wordlist:
-            passwords.extend(DEFAULT_PASSWORDS)
-        if request.passwords:
-            passwords.extend(request.passwords)
-        
-        # Remove duplicates
-        passwords = list(dict.fromkeys(passwords))
-        
         result = {
             "id": str(uuid.uuid4()),
             "target_url": base_url,
@@ -1199,13 +1189,15 @@ async def start_bruteforce(request: BruteForceRequest):
             "finished_at": None,
             "total_attempts": 0,
             "credentials_found": [],
+            "user_info_disclosed": [],  # NEW: User info from wp.getUsers
             "xmlrpc_enabled": False,
             "multicall_enabled": False,
             "status": "running",
             "error": None,
             "progress": [],
             "usernames_tested": request.usernames,
-            "passwords_count": len(passwords)
+            "passwords_count": 0,
+            "password_sources": []
         }
         
         async with httpx.AsyncClient(
