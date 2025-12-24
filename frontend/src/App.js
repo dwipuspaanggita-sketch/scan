@@ -357,6 +357,19 @@ const BruteForce = () => {
                   Wordlist default ({wordlistCount} passwords)
                 </span>
               </label>
+              
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={generateUsernamePasswords}
+                  onChange={e => setGenerateUsernamePasswords(e.target.checked)}
+                  className="w-4 h-4 rounded"
+                  disabled={running}
+                />
+                <span className="text-gray-300 group-hover:text-white">
+                  Generate password dari username (~50+ per user)
+                </span>
+              </label>
             </div>
 
             <div>
@@ -405,16 +418,46 @@ const BruteForce = () => {
             </button>
           </div>
 
+          {/* Wordlist Info Box */}
+          <div className="mt-6 p-4 bg-purple-500/10 border border-purple-500/30 rounded-lg">
+            <h4 className="text-sm font-medium text-purple-400 mb-2 flex items-center gap-2">
+              <Key className="w-4 h-4" /> Password Sources
+            </h4>
+            {wordlistInfo && (
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="p-2 bg-black/30 rounded">
+                  <div className="text-gray-400">WordPress</div>
+                  <div className="text-white font-bold">{wordlistInfo.categories?.wordpress_specific || 0}</div>
+                </div>
+                <div className="p-2 bg-black/30 rounded">
+                  <div className="text-gray-400">Common</div>
+                  <div className="text-white font-bold">{wordlistInfo.categories?.base_common || 0}</div>
+                </div>
+                <div className="p-2 bg-black/30 rounded">
+                  <div className="text-gray-400">Year-based</div>
+                  <div className="text-white font-bold">{wordlistInfo.categories?.year_based || 0}</div>
+                </div>
+                <div className="p-2 bg-black/30 rounded">
+                  <div className="text-gray-400">Month-based</div>
+                  <div className="text-white font-bold">{wordlistInfo.categories?.month_based || 0}</div>
+                </div>
+              </div>
+            )}
+            <div className="mt-2 text-xs text-gray-500">
+              + Username variations (leetspeak, suffix, prefix)
+            </div>
+          </div>
+
           {/* Info Box */}
-          <div className="mt-6 p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+          <div className="mt-4 p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
             <h4 className="text-sm font-medium text-red-400 mb-2 flex items-center gap-2">
               <AlertTriangle className="w-4 h-4" /> Cara Kerja
             </h4>
             <ul className="text-xs text-gray-400 space-y-1">
-              <li>• Menggunakan system.multicall XMLRPC</li>
-              <li>• Bypass rate limiting dengan batch request</li>
-              <li>• {batchSize} password per request</li>
+              <li>• system.multicall bypass rate limiting</li>
+              <li>• {batchSize} password per HTTP request</li>
               <li>• Method: wp.getUsersBlogs</li>
+              <li>• Auto User Info Disclosure jika berhasil</li>
             </ul>
           </div>
         </div>
